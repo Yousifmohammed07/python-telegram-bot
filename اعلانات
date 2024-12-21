@@ -1,0 +1,141 @@
+from telegram import Update, ReplyKeyboardMarkup
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+import sqlite3
+
+# إعداد قاعدة البيانات
+def init_db():
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        points INTEGER DEFAULT 0
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS withdrawal_requests (
+        user_id INTEGER,
+        points INTEGER,
+        info TEXT,
+        status TEXT DEFAULT 'Pending'
+    )
+    """)
+    conn.commit()
+    conn.close()
+
+# وظيفة لإضافة مستخدم إلى قاعدة البيانات
+def add_user(user_id, username):
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username))
+    conn.commit()
+    conn.close()
+
+# تحديث النقاط
+def update_points(user_id, points):
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET points = points + ? WHERE user_id = ?", (points, user_id))
+    conn.commit()
+    conn.close()
+
+# جلب النقاط للمستخدم
+def get_points(user_id):
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT points FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result[0] if result else 0
+
+# إضافة طلب سحب
+def add_withdrawal_request(user_id, points, info):
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO withdrawal_requests (user_id, points, info) VALUES (?, ?, ?)", (user_id, points, info))
+    conn.commit()
+    conn.close()
+
+# عرض طلبات السحب (لصاحب البوت)
+def get_withdrawal_requests():
+    conn = sqlite3.connect("bot_data.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM withdrawal_requests WHERE status = 'Pending'")
+    requests = cursor.fetchall()
+    conn.close()
+    return requests
+
+# الأوامر الأساسية
+def start(update: Update, context: CallbackContext) -> None:
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    add_user(user_id, username)
+    update.message.reply_text("مرحبًا بك في بوت الإعلانات! 🎉\nاستخدم الأوامر:\n/view_ad - مشاهدة إعلان\n/my_points - عرض نقاطك\n/withdraw - طلب سحب النقاط")
+
+def view_ad(update: Update, context: CallbackContext) -> None:
+    user_id = update.effective_user.id
+    # منح نقاط بعد مشاهدة الإعلان
+    update_points(user_id, 10)  # افتراضيًا يمنح 10 نقاط
+    update.message.reply_text("تمت مشاهدة الإعلان! 🎉\nلقد حصلت على 10 نقاط.")
+
+def my_points(update: Update, context: CallbackContext) -> None:
+    user_id = update.effective_user.id
+    points = get_points(user_id)
+    update.message.reply_text(f"نقاطك الحالية: {points} 🏆")
+
+def withdraw(update: Update, context: CallbackContext) -> None:
+    user_id = update.effective_user.id
+    points = get_points(user_id)
+    if points < 50:  # الحد الأدنى للسحب
+        update.message.reply_text("عذرًا، يجب أن تمتلك 50 نقطة على الأقل لطلب السحب.")
+        return
+    
+    update.message.reply_text("أرسل معلومات السحب (مثل رقم الهاتف أو البريد الإلكتروني):")
+
+    context.user_data['awaiting_info'] = True
+
+def handle_message(update: Update, context: CallbackContext) -> None:
+    user_id = update.effective_user.id
+    if context.user_data.get('awaiting_info'):
+        info = update.message.text
+        points = get_points(user_id)
+        add_withdrawal_request(user_id, points, info)
+        update_points(user_id, -points)  # خصم النقاط
+        context.user_data['awaiting_info'] = False
+        update.message.reply_text("تم تقديم طلب السحب! ✅")
+    else:
+        update.message.reply_text("مرحبًا! استخدم الأوامر لتنفيذ العمليات.")
+
+def admin_view_requests(update: Update, context: CallbackContext) -> None:
+    if update.effective_user.username != "AdminUsername":  # استبدل "AdminUsername" باسم مستخدمك
+        update.message.reply_text("هذا الأمر مخصص لصاحب البوت فقط.")
+        return
+
+    requests = get_withdrawal_requests()
+    if not requests:
+        update.message.reply_text("لا توجد طلبات سحب حاليًا.")
+    else:
+        msg = "طلبات السحب:\n"
+        for req in requests:
+            msg += f"User ID: {req[0]}, Points: {req[1]}, Info: {req[2]}, Status: {req[3]}\n"
+        update.message.reply_text(msg)
+
+# الإعداد
+def main():
+    init_db()
+    updater = Updater("PUT_YOUR_BOT_TOKEN_HERE")
+    dispatcher = updater.dispatcher
+
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(CommandHandler("view_ad", view_ad))
+    dispatcher.add_handler(CommandHandler("my_points", my_points))
+    dispatcher.add_handler(CommandHandler("withdraw", withdraw))
+    dispatcher.add_handler(CommandHandler("admin_view_requests", admin_view_requests))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+
+    updater.start_polling()
+    updater.idle()
+
+if __name__ == "__main__":
+    main()
